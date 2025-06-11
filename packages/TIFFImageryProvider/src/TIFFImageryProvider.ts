@@ -3,11 +3,13 @@ import GeoTIFF, { Pool, fromUrl, fromBlob, GeoTIFFImage, TypedArrayArrayWithDime
 
 import { addColorScale, plot } from './plotty'
 import { getMinMax, generateColorScale, findAndSortBandNumbers, stringColorToRgba } from "./helpers/utils";
+import { ycbcrToRgb } from "./helpers/utils";
 import { ColorScaleNames, TypedArray } from "./plotty/typing";
 import TIFFImageryProviderTilingScheme from "./TIFFImageryProviderTilingScheme";
 import { BBox, reprojection } from "./helpers/reprojection";
 
 import { reverseArray } from "./helpers/utils";
+import { ycbcrToRgb } from "./helpers/utils";
 import { createCanavas } from "./helpers/createCanavas";
 
 export interface SingleBandRenderOptions {
@@ -573,7 +575,35 @@ export class TIFFImageryProvider {
 
       try {
         if (this.renderOptions.convertToRGB) {
-          res = await image.readRGB(options) as TypedArrayArrayWithDimensions;
+      try {
+        console.log('TIFFImageryProvider: Executing image.readRGB()');
+        res = await image.readRGB(options) as TypedArrayArrayWithDimensions;
+        console.log('TIFFImageryProvider: image.readRGB() successful.');
+      } catch (rgbError) {
+        console.error('TIFFImageryProvider: image.readRGB() failed!', rgbError);
+        const photoMet = image.fileDirectory.PhotometricInterpretation;
+        console.log('TIFFImageryProvider: image.readRGB() failed. PhotometricInterpretation:', photoMet, 'Error:', rgbError);
+        if (photoMet === 6) { /* 6 is YCbCr */
+          console.log('TIFFImageryProvider: Attempting YCbCr to RGB fallback conversion.');
+          try {
+            const rasterOptions = { ...options, samples: [0, 1, 2] }; /* Assuming Y, Cb, Cr are first 3 bands */
+            const ycbcrData = await image.readRasters(rasterOptions) as TypedArrayArrayWithDimensions;
+            if (ycbcrData && ycbcrData.length >= 3) {
+              console.log('TIFFImageryProvider: YCbCr bands read successfully via readRasters().');
+              /* Use image.getWidth() and image.getHeight() for dimensions */
+              const { r: rBand, g: gBand, b: bBand } = ycbcrToRgb(ycbcrData[0] as TypedArray, ycbcrData[1] as TypedArray, ycbcrData[2] as TypedArray, image.getWidth(), image.getHeight());
+              res = [rBand, gBand, bBand] as any; /* Cast as any to satisfy TypedArrayArrayWithDimensions if needed */
+              console.log('TIFFImageryProvider: YCbCr to RGB conversion successful.');
+              rgbError = null;
+            } else {
+              console.error('TIFFImageryProvider: Failed to read YCbCr bands for fallback.');
+            }
+          } catch (fallbackError) {
+            console.error('TIFFImageryProvider: YCbCr to RGB fallback conversion failed.', fallbackError);
+          }
+        }
+        if (rgbError) { throw rgbError; }
+      }
         } else {
           res = await image.readRasters(options) as TypedArrayArrayWithDimensions;
           if (this.reverseY) {
